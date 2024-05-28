@@ -3,6 +3,7 @@
 import logging
 import sys
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from signal import pause
 
@@ -13,6 +14,12 @@ from audioInterface import AudioInterface
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class AudioGuestBookStatus(Enum):
+    IDLE = ("IDLE",)
+    PLAYING_GREETING = ("PLAYING_GREETING",)
+    RECORDING = "RECORDING"
 
 
 class AudioGuestBook:
@@ -46,6 +53,7 @@ class AudioGuestBook:
             channels=self.config["channels"],
             mixer_control_name=self.config["mixer_control_name"],
         )
+        self.status = AudioGuestBookStatus.IDLE
         self.setup_hook()
 
     def load_config(self):
@@ -78,6 +86,7 @@ class AudioGuestBook:
         """
         logger.info("Phone off hook, ready to begin!")
         logger.info("Playing voicemail...")
+        self.status = AudioGuestBookStatus.PLAYING_GREETING
         self.audio_interface.play_audio(
             self.config["greeting"],
             self.config["greeting_volume"],
@@ -93,6 +102,7 @@ class AudioGuestBook:
         output_file = str(
             Path(self.config["recordings_path"]) / f"{datetime.now().isoformat()}.wav"
         )
+        self.status = AudioGuestBookStatus.RECORDING
         self.audio_interface.start_recording(output_file)
         logger.info("Recording started...")
 
@@ -101,7 +111,11 @@ class AudioGuestBook:
         Handles the on-hook event to stop and save the recording.
         """
         logger.info("Phone on hook. Ending call and saving recording.")
-        self.audio_interface.stop_recording()
+        if self.status == AudioGuestBookStatus.RECORDING:
+            self.audio_interface.stop_recording()
+        elif self.status == AudioGuestBookStatus.PLAYING_GREETING:
+            self.audio_interface.stop_playing()
+        self.status = AudioGuestBookStatus.IDLE
 
     def run(self):
         """

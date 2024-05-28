@@ -100,8 +100,10 @@ class AudioInterface:
 
         # Play the actual audio file
         try:
-            subprocess.run(
-                ["aplay", "-D", str(self.alsa_hw_mapping), str(input_file)], check=True
+            self.playing_proccess = subprocess.Popen(
+                ["aplay", "-D", str(self.alsa_hw_mapping), str(input_file)],
+                check=True,
+                preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN),
             )
         except subprocess.CalledProcessError as e:
             logger.error(f"Error playing {input_file}: {e}")
@@ -148,3 +150,15 @@ class AudioInterface:
                 # Force kill if not exited
                 self.recording_process.kill()
             logger.info("Recording stopped.")
+
+    def stop_playing(self):
+        """
+        Stops the ongoing audio playing process
+        """
+        if self.playing_proccess:
+            self.recording_process.terminate()
+            try:
+                self.playing_proccess.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.playing_proccess.kill()
+            logger.info("Playing stopped.")
