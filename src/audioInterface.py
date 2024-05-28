@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import signal
 import subprocess
@@ -51,6 +52,7 @@ class AudioInterface:
         self.sample_rate = sample_rate
         self.channels = channels
         self.recording_process = None
+        self.playback_process = None
         self.mixer_control_name = mixer_control_name
 
     def set_volume(self, volume_percentage):
@@ -70,43 +72,43 @@ class AudioInterface:
         except subprocess.CalledProcessError as e:
             logger.error(f"Error setting volume: {e}")
 
-    def play_audio(self, input_file, volume=1, start_delay_sec=0):
+    async def play_audio(self, input_file, volume=1, start_delay_sec=0):
         """
         Plays an audio file using `aplay` after setting the volume with `amixer`.
         """
+        if self.playback_process is not None:
+            return
+
         if not Path(input_file).exists():
             logger.error(f"Audio file {input_file} not found.")
             return
 
+        self.audio_playback_was_interrupted = False
         self.set_volume(volume)
 
         # If a start delay is needed, play the silent audio file
         if start_delay_sec > 0:
-            subprocess.run(
-                [
-                    "aplay",
-                    "-r",
-                    str(self.sample_rate),
-                    "-c",
-                    str(self.channels),
-                    "-d",
-                    str(start_delay_sec),
-                    "-f",
-                    str(self.format),
-                    "/dev/zero",
-                ],
-                check=True,
-            )
+            await asyncio.sleep(start_delay_sec)
 
         # Play the actual audio file
         try:
-            subprocess.run(
-                ["aplay", "-D", str(self.alsa_hw_mapping), str(input_file)], check=True
+            playback_process = await asyncio.create_subprocess_exec(
+                "aplay",
+                "-D",
+                str(self.alsa_hw_mapping),
+                str(input_file),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
+            self.playback_process = playback_process
+            await playback_process.wait()
+            self.playback_process = None  # Finished playing
         except subprocess.CalledProcessError as e:
             logger.error(f"Error playing {input_file}: {e}")
+        finally:
+            return self.audio_playback_was_interrupted
 
-    def start_recording(self, output_file):
+    async def start_recording(self, output_file):
         """
         Starts recording audio to the specified file in a non-blocking manner.
 
@@ -129,22 +131,36 @@ class AudioInterface:
             str(self.channels),
             output_file,
         ]
-        self.recording_process = subprocess.Popen(
-            command,
+        self.recording_process = await asyncio.create_subprocess_exec(
+            *command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN),
         )
 
-    def stop_recording(self):
+    async def stop_recording(self):
         """
         Stops the ongoing audio recording process.
         """
         if self.recording_process:
             self.recording_process.terminate()
             try:
-                self.recording_process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
+                await asyncio.wait_for(self.recording_process.wait(), timeout=2)
+            except asyncio.TimeoutError:
                 # Force kill if not exited
                 self.recording_process.kill()
+                await self.recording_process.wait()
             logger.info("Recording stopped.")
+            self.recording_process = None
+
+    async def stop_playback(self):
+        if self.playback_process:
+            self.audio_playback_was_interrupted = True
+            self.playback_process.terminate()
+            try:
+                await asyncio.wait_for(self.playback_process.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                self.playback_process.kill()
+                self.playback_process.wait()
+            self.playback_process = None
+            logger.info("Playback stopped.")
